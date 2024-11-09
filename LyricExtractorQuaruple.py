@@ -14,10 +14,13 @@ artist_name = "Rick Astley"  # Correct artist's name
 song_title = "Never Gonna Give You Up"
 
 # Define file paths
-mp3_file = f"{song_title}.mp3"
-wav_file = f"{song_title}.wav"
-lyrics_file = "lyricpre.txt"
-output_file = "lyricpre.json"
+# mp3_file = f"{song_title}.mp3"
+# music\Never gonna give you up.mp3
+mp3_file = f"music\{song_title}.mp3"
+wav_file = f"music\{song_title}.wav"
+lyrics_file = f"lyric\{song_title}"+"_lyric.txt"
+output_file = f"lyric\{song_title}"+"_lyric.json"
+timestamp_file = f"lyric\{song_title}"+"_timestamp.json"
 lang = "eng"
 
 # Search for the song
@@ -100,7 +103,7 @@ if convert_mp3_to_wav(mp3_file, wav_file):
 
     # Write formatted lyrics to file
     formatted_lyrics = format_lyrics_with_timestamps(adjusted_data, song.title)
-    with open("lyric.txt", 'w', encoding='utf-8') as text_file:
+    with open(timestamp_file, 'w', encoding='utf-8') as text_file:
         text_file.write(formatted_lyrics)
     print("Lyrics have been successfully written to lyric.txt")
 else:
