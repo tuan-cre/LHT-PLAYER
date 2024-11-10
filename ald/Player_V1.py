@@ -1,14 +1,13 @@
 from tkinter import *
-from tkinter import filedialog, simpledialog
-import os
+from tkinter import filedialog, simpledialog, messagebox, ttk
+from tkinter.ttk import Combobox
 from pytubefix import YouTube
-from tkinter import messagebox, filedialog
-from tkinter import ttk
 from pydub import AudioSegment
 import shutil
 import lyricsgenius
 import pygame
 import vlc
+import os, shutil
 
 class MusicPlayer:
     def __init__(self, root):
@@ -85,14 +84,14 @@ class MusicPlayer:
         self.config_frame = Frame(self.music_tab, bg="gray")
         self.config_frame.pack(fill=X, pady=5)
 
-        add_song_folder = Button(self.config_frame, text="Thêm bài hát từ thư mục", command=lambda: self.add_to_library(1), bd=0, width=20, background='white')
-        add_song_folder.pack(side=LEFT, padx=10, pady=10)
-        add_mp3_file = Button(self.config_frame, text="Thêm tệp mp3", command=lambda: self.add_to_library(2), bd=0, width=20, background='white')
-        add_mp3_file.pack(side=LEFT, padx=10, pady=10)
-        download_mp3_file = Button(self.config_frame, text="Tải bài hát từ youtube", command=lambda: self.download_to_library(1), bd=0, width=20, background='white')
-        download_mp3_file.pack(side=LEFT, padx=10, pady=10)
-        delete_selected_song= Button(self.config_frame, text="Xóa bài hát được chọn", command=lambda: self.delete_selected_file(1), bd=0, width=20, background='white')
-        delete_selected_song.pack(side=LEFT, padx=10, pady=10)
+        add_song_folder_button = Button(self.config_frame, text="Thêm bài hát từ thư mục", command=self.add_song_folder, bd=0, width=20, background='white')
+        add_song_folder_button.pack(side=LEFT, padx=10, pady=10)
+        add_mp3_file_button = Button(self.config_frame, text="Thêm tệp mp3", command=self.add_mp3_file, bd=0, width=20, background='white')
+        add_mp3_file_button.pack(side=LEFT, padx=10, pady=10)
+        download_mp3_file_button = Button(self.config_frame, text="Tải bài hát từ youtube", command=lambda: self.download_to_library(1), bd=0, width=20, background='white')
+        download_mp3_file_button.pack(side=LEFT, padx=10, pady=10)
+        delete_selected_song_button= Button(self.config_frame, text="Xóa bài hát được chọn", command=lambda: self.delete_selected_file(1), bd=0, width=20, background='white')
+        delete_selected_song_button.pack(side=LEFT, padx=10, pady=10)
 
         # Song list frame
         self.songlist_frame = Frame(self.music_tab, bg="white")
@@ -126,10 +125,10 @@ class MusicPlayer:
         self.config_frame = Frame(self.video_tab, bg="gray")
         self.config_frame.pack(fill=X, pady=5)
 
-        add__video_folder = Button(self.config_frame, text="Thêm video từ thư mục", command=lambda: self.add_to_library(3), bd=0, width=20, background='white')
-        add__video_folder.pack(side=LEFT, padx=10, pady=10)
-        add_mp4_file = Button(self.config_frame, text="Thêm tệp mp4", command=lambda: self.add_to_library(4), bd=0, width=20, background='white')
-        add_mp4_file.pack(side=LEFT, padx=10, pady=10)
+        add__video_folder_button = Button(self.config_frame, text="Thêm video từ thư mục", command=self.add_video_folder, bd=0, width=20, background='white')
+        add__video_folder_button.pack(side=LEFT, padx=10, pady=10)
+        add_mp4_file_button = Button(self.config_frame, text="Thêm tệp mp4", command=self.add_mp4_file, bd=0, width=20, background='white')
+        add_mp4_file_button.pack(side=LEFT, padx=10, pady=10)
         download_mp4_file = Button(self.config_frame, text="Tải video từ youtube", command=lambda: self.download_to_library(2), bd=0, width=20, background='white')
         download_mp4_file.pack(side=LEFT, padx=10, pady=10)
         delete_selected_video= Button(self.config_frame, text="Xóa video được chọn", command=lambda: self.delete_selected_file(2), bd=0, width=20, background='white')
@@ -167,12 +166,14 @@ class MusicPlayer:
         self.config_frame = Frame(self.lyrics_tab, bg="gray")
         self.config_frame.pack(fill=X, pady=5)
 
-        get_lyric_button = Button(self.config_frame, text="Get lyric", command=self.fetch_lyric, bd=0, width=20, background='white')
+        get_lyric_button = Button(self.config_frame, text="Trích xuất lời bài hát", command=self.fetch_lyric, bd=0, width=20, background='white')
         get_lyric_button.pack(side=LEFT, padx=10, pady=10)
         input_song_title = Entry(self.config_frame, textvariable=self.song_title, width=25, background='white')
         input_song_title.pack(side=LEFT, padx=10, pady=10)
+        self.add_placeholder(input_song_title, "Nhập tên bài hát")
         input_artist_name = Entry(self.config_frame, textvariable=self.artist_name, width=25, background='white')
         input_artist_name.pack(side=LEFT, padx=10, pady=10)
+        self.add_placeholder(input_artist_name, "Nhập tên nghệ sĩ")
 
         self.lyrics_frame = Frame(self.lyrics_tab, bg="white")
         self.lyrics_frame.pack(fill=BOTH, expand=True, padx=10, pady=(0, 45))
@@ -216,8 +217,8 @@ class MusicPlayer:
                 widget.destroy()
             self.video_container.config(background="black")
             self.video_canvas.config(background="black")
-            video_frame_id = self.video_frame.winfo_id()  # Get the window ID of the canvas
-            self.mediaplayer.set_hwnd(video_frame_id)  # Set the window ID where the video will be displayed
+            video_frame_id = self.video_frame.winfo_id()  
+            self.mediaplayer.set_hwnd(video_frame_id)  
             
             self.mediaplayer.play()
 
@@ -242,62 +243,67 @@ class MusicPlayer:
         elif tab_index == 3:
             self.notebook.select(self.lyrics_tab)
 
-    def add_to_library(self, n):
-        if n == 1:
-            """Load songs from a selected directory."""
-            directory = filedialog.askdirectory()
-            if self.music_directory:
-                for widget in self.song_container.winfo_children():
-                    widget.destroy() 
-                for file in os.listdir(self.music_directory):
-                    if file.endswith(".mp3"):
-                        source_path = os.path.join(directory, file)
-                        destination_path = os.path.join(self.music_directory, file)
-                        # Copy the file to the music directory if it doesn’t already exist
-                        if not os.path.exists(destination_path):
-                            shutil.copy(source_path, destination_path)
+    def add_song_folder(self):
+        """Load songs from a selected directory."""
+        directory = filedialog.askdirectory()
+        if self.music_directory:
+            for widget in self.song_container.winfo_children():
+                widget.destroy() 
+            for file in os.listdir(directory):
+                if file.endswith(".mp3"):
+                    source_path = os.path.join(directory, file)
+                    destination_path = os.path.join(self.music_directory, file)
+                    # Copy the file to the music directory if it doesn’t already exist
+                    if not os.path.exists(destination_path):
+                        shutil.copy(source_path, destination_path)
+                    if file not in self.songs:
                         self.songs.append(file)
-                self.display_songs()
-        elif n == 2:
-            """Load songs from selected files."""
-            files = filedialog.askopenfilenames(filetypes=[("MP3 files", "*.mp3")])
-            if files:
-                for widget in self.song_container.winfo_children():
-                    widget.destroy() 
-                for file in files:
-                    file_name = os.path.basename(file)
-                    destination_path = os.path.join(self.music_directory, file_name)
-                    if not os.path.exists(destination_path):
-                        shutil.copy(file, destination_path)
+            self.display_songs()
+
+    def add_mp3_file(self):
+        """Load songs from selected files."""
+        files = filedialog.askopenfilenames(filetypes=[("MP3 files", "*.mp3")])
+        if files:
+            for widget in self.song_container.winfo_children():
+                widget.destroy() 
+            for file in files:
+                file_name = os.path.basename(file)
+                destination_path = os.path.join(self.music_directory, file_name)
+                if not os.path.exists(destination_path):
+                    shutil.copy(file, destination_path)
+                if file_name not in self.songs:
                     self.songs.append(file.split("/")[-1])
-                self.display_songs() 
-        elif n == 3:
-            """Load videos from a selected directory."""
-            directory = filedialog.askdirectory()
-            if self.video_directory:
-                for widget in self.video_container.winfo_children():
-                     widget.destroy() 
-                for file in os.listdir(self.video_directory):
-                    if file.endswith(".mp4"):
-                        source_path = os.path.join(directory, file)
-                        destination_path = os.path.join(self.video_directory, file)
-                        if not os.path.exists(destination_path):
-                            shutil.copy(source_path, destination_path)
-                        self.videos.append(file)
-                self.display_videos()
-        elif n == 4:
-            """Load videos from selected files."""
-            files = filedialog.askopenfilenames(filetypes=[("MP4 files", "*.mp4")])
-            if files:
-                for widget in self.video_container.winfo_children():
-                    widget.destroy() 
-                for file in files:
-                    file_name = os.path.basename(file)
-                    destination_path = os.path.join(self.video_directory, file_name)
+            self.display_songs()
+    
+    def add_video_folder(self):
+        """Load videos from a selected directory."""
+        directory = filedialog.askdirectory()
+        if self.video_directory:
+            for widget in self.video_container.winfo_children():
+                widget.destroy() 
+            for file in os.listdir(directory):
+                if file.endswith(".mp4"):
+                    source_path = os.path.join(directory, file)
+                    destination_path = os.path.join(self.video_directory, file)
                     if not os.path.exists(destination_path):
-                        shutil.copy(file, destination_path)
-                        self.videos.append(file.split("/")[-1])
-                self.display_videos()
+                        shutil.copy(source_path, destination_path)
+                    if file not in self.videos:
+                        self.videos.append(file)
+            self.display_videos()
+    
+    def add_mp4_file(self):
+        """Load videos from selected files."""
+        files = filedialog.askopenfilenames(filetypes=[("MP4 files", "*.mp4")])
+        if files:
+            for widget in self.video_container.winfo_children():
+                widget.destroy() 
+            for file in files:
+                file_name = os.path.basename(file)
+                destination_path = os.path.join(self.video_directory, file_name)
+                if not os.path.exists(destination_path):
+                    shutil.copy(file, destination_path)
+                if file_name not in self.videos:                    self.videos.append(file.split("/")[-1])
+            self.display_videos()
 
     def download_to_library(self, n):
         if n == 1:
@@ -427,6 +433,23 @@ class MusicPlayer:
             self.songlist_canvas.yview_moveto(0)
         if self.video_canvas.yview()[0] <= 0:
             self.video_canvas.yview_moveto(0)
+
+    def add_placeholder(self, entry, placeholder):
+        entry.insert(0, placeholder)
+        entry.config(fg='grey')
+        
+        def on_focus_in(event):
+            if entry.get() == placeholder:
+                entry.delete(0, END)
+                entry.config(fg='black')
+        
+        def on_focus_out(event):
+            if not entry.get():
+                entry.insert(0, placeholder)
+                entry.config(fg='grey')
+
+        entry.bind("<FocusIn>", on_focus_in)
+        entry.bind("<FocusOut>", on_focus_out)
 
 if __name__ == "__main__":
     root = Tk()
