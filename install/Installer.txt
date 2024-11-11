@@ -1,0 +1,1 @@
+pyinstaller mavPlayer.py --add-binary "C:/Program Files/VideoLAN/VLC/libvlc.dll;." --add-binary "C:/Program Files/VideoLAN/VLC/plugins/*;plugins" --add-data "C:/Program Files/VideoLAN/VLC/*.dll;vlc_dlls" --noconsole
