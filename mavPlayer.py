@@ -5,7 +5,6 @@ from pydub import AudioSegment
 import lyricsgenius
 import vlc
 import os, shutil
-import pygame
 
 class MusicPlayer:
     def __init__(self, root):
@@ -32,6 +31,7 @@ class MusicPlayer:
 
         self.instance = vlc.Instance()
         self.mediaplayer = self.instance.media_player_new()
+        self.songplayer = self.instance.media_player_new()
 
         self.song_title = StringVar()
         self.artist_name = StringVar()
@@ -39,10 +39,6 @@ class MusicPlayer:
         self.highlighted_label = None
 
         self.create_widgets()
-
-        pygame.mixer.init()
-        self.ispause = False
-        self.time = 0
 
     def create_widgets(self):
 
@@ -169,35 +165,25 @@ class MusicPlayer:
             if not song_name.endswith(".mp3"):
                 return
             song_path = os.path.join(self.music_directory, song_name)
-            pygame.mixer.music.load(song_path)
-            self.time = 0
-            pygame.mixer.music.play()
+            self.media = self.instance.media_new(song_path)
+            self.songplayer.set_media(self.media)
+            self.songplayer.play()
 
     def stop_song(self):
-        pygame.mixer.music.stop()
+        self.songplayer.stop()
         self.time = 0
 
     def pause_resume_song(self):
-        if self.ispause:
-            pygame.mixer.music.unpause()
-            self.ispause = False
+        if self.songplayer.is_playing():
+            self.songplayer.pause()
         else:
-            pygame.mixer.music.pause()
-            self.ispause = True
+            self.songplayer.play()
     
     def rewind_song(self):
-        if pygame.mixer.music.get_busy():
-            if self.time == 0:
-                self.time = pygame.mixer.music.get_pos() / 1000
-            self.time = max(self.time - 10, 0)
-            pygame.mixer.music.set_pos(self.time)
+        self.songplayer.set_time(self.songplayer.get_time() - 10000)
 
     def fast_forward_song(self):
-        if pygame.mixer.music.get_busy():
-            if self.time == 0:
-                self.time = pygame.mixer.music.get_pos() / 1000
-            self.time += 10
-            pygame.mixer.music.set_pos(self.time)
+        self.songplayer.set_time(self.songplayer.get_time() + 10000)
 
     def play_video(self):
         if self.highlighted_label:
