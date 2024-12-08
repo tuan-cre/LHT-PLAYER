@@ -2,13 +2,16 @@
 
 - Mẫu:
   1. Create First GUI Application Using Python Tkinter.
+        https://www.geeksforgeeks.org/create-first-gui-application-using-python-tkinter/
   2. Create a GUI to Extract Lyrics from Song Using Python.
+        https://www.geeksforgeeks.org/create-a-gui-to-extract-lyrics-from-song-using-python/
   3. Create GUI for Downloading YouTube Video Using Python.
+        https://www.geeksforgeeks.org/create-gui-for-downloading-youtube-video-using-python/
 
 - Cải tiến và phát triển thêm chức năng, bao gồm:
   + Tích hợp tất cả các tính năng vào một ứng dụng duy nhất với giao diện thân thiện.
   + Quản lý thư viện nhạc và video cục bộ (thêm, xóa file từ thư viện).
-  + Phát nhạc và video với các nút điều khiển (phát, dừng, tua nhanh/chậm).
+  + Phát nhạc và video với các nút điều khiển (phát, dừng, tua tiến, lùi).
   + Chức năng tải video hoặc nhạc từ YouTube và chuyển đổi định dạng từ MP4 sang MP3.
   + Chức năng trích xuất lời bài hát sử dụng API Genius.
   + Chức năng lưu và load lời bài hát.
