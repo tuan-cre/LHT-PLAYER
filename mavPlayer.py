@@ -22,9 +22,11 @@ class MusicPlayer:
 
         os.makedirs("music", exist_ok=True)
         os.makedirs("video", exist_ok=True)
+        os.makedirs("lyrics", exist_ok=True)
 
         self.music_directory = "music"
         self.video_directory = "video"
+        self.lyric_directory = "lyrics"
 
         self.videos = []
         self.songs = []
@@ -148,13 +150,19 @@ class MusicPlayer:
         Label(self.config_frame, text="💡Để trống nếu không rõ nghệ sĩ", bg="gray", fg="darkred").pack(side=LEFT, padx=0, pady=10)
 
         self.lyrics_frame = Frame(self.lyrics_tab, bg="white")
-        self.lyrics_frame.pack(fill=BOTH, expand=True, padx=10, pady=(0, 45))
+        self.lyrics_frame.pack(fill=BOTH, expand=True, padx=10, pady=(0))
 
         self.lyrics_canvas = Canvas(self.lyrics_frame, bg="gray", highlightthickness=0)
         self.lyrics_canvas.pack(side=LEFT, fill=BOTH, expand=True, padx=2, pady=2)
 
         self.lyrics_container = Frame(self.lyrics_canvas, bg="gray")
         self.lyrics_canvas.create_window((0, 0), window=self.lyrics_container, anchor="nw")
+
+        self.saveload_frame = Frame(self.lyrics_tab, bg="gray")
+        self.saveload_frame.pack(fill=X, pady=(2, 37))
+        
+        Button(self.saveload_frame, text="💾 Lưu lời bài hát", command=self.save_lyrics, bd=0, width=20, background='white').pack(side=LEFT, padx=10, pady=10)
+        Button(self.saveload_frame, text="📂 Tải lời bài hát", command=self.load_lyrics, bd=0, width=20, background='white').pack(side=RIGHT, padx=10, pady=10)
 
         self.lyrics_canvas.bind("<Configure>", lambda e: self.lyrics_canvas.configure(scrollregion=self.lyrics_canvas.bbox("all")))
         self.lyrics_canvas.bind_all("<MouseWheel>", self.mouse_wheel)
@@ -337,6 +345,39 @@ class MusicPlayer:
             self.display_lyrics(lyrics)
         else:
             messagebox.showerror("Lỗi", "Không tim thấy lời bài hát.")
+
+    def save_lyrics(self):
+        if not self.lyrics_container.winfo_children():
+            messagebox.showwarning("Thông báo", "Không có lời bài hát để lưu.")
+            return
+
+        file_name = simpledialog.askstring("Lưu lời bài hát", "Nhập tên file:")
+        if file_name:
+            file_path = os.path.join(self.lyric_directory, file_name + ".txt")
+            lyrics = ""
+            for widget in self.lyrics_container.winfo_children():
+                lyrics += widget.cget("text") + "\n"
+
+            with open(file_path, "w", encoding="utf-8") as file:
+                file.write(lyrics)
+            messagebox.showinfo("Thành công", f"Lời bài hát đã được lưu tại: {file_path}")
+    
+    def load_lyrics(self):
+        file_path = filedialog.askopenfilename(initialdir=self.lyric_directory, title="Chọn file lời bài hát", filetypes=[("Text files", "*.txt")])
+        if file_path:
+            with open(file_path, "r", encoding="utf-8") as file:
+                lyrics = file.readlines()
+
+            for widget in self.lyrics_container.winfo_children():
+                widget.destroy()
+
+            for line in lyrics:
+                lyric_label = Label(self.lyrics_container, text=line.strip(), bg="gray", width=94, anchor="w", padx=10, pady=0)
+                lyric_label.pack(fill=X, padx=5, pady=5)
+
+            self.lyrics_canvas.update_idletasks()
+            self.lyrics_canvas.config(scrollregion=self.lyrics_canvas.bbox("all"))
+            messagebox.showinfo("Thành công", "Tải lời bài hát thành công!")
 
     def convert_mp4_to_mp3(self, mp4_path):
         audio = AudioSegment.from_file(mp4_path, format="mp4")
