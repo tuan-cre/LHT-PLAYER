@@ -1,0 +1,13 @@
+ỨNG DỤNG PHÁT/TẢI NHẠC, VIDEO, LỜI BÀI HÁT
+
+- Mẫu:
+  1. Create First GUI Application Using Python Tkinter.
+  2. Create a GUI to Extract Lyrics from Song Using Python.
+  3. Create GUI for Downloading YouTube Video Using Python.
+
+- Cải tiến và phát triển thêm chức năng, bao gồm:
+  + Tích hợp tất cả các tính năng vào một ứng dụng duy nhất với giao diện thân thiện.
+  + Quản lý thư viện nhạc và video cục bộ (thêm, xóa file từ thư viện).
+  + Phát nhạc và video với các nút điều khiển (phát, dừng, tua nhanh/chậm).
+  + Chức năng tải video hoặc nhạc từ YouTube và chuyển đổi định dạng từ MP4 sang MP3.
+  + Chức năng trích xuất lời bài hát sử dụng API Genius.
