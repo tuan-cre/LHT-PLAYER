@@ -61,12 +61,12 @@ class MusicPlayer:
         self.notebook.add(self.lyrics_tab, text="Lyric")
         self.notebook.place(relwidth=0.8, relheight=1.1, x=185, y=-23)
 
-        self.setup_music_library()
+        self.setup_music_tab()
         self.setup_lyrics_tab()
         self.setup_video_tab()
         self.notebook.select(self.music_tab)
 
-    def setup_music_library(self):
+    def setup_music_tab(self):
 
         self.config_frame = Frame(self.music_tab, bg="gray")
         self.config_frame.pack(fill=X, pady=5)
