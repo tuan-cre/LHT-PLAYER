@@ -15,3 +15,5 @@
   + Chức năng tải video hoặc nhạc từ YouTube và chuyển đổi định dạng từ MP4 sang MP3.
   + Chức năng trích xuất lời bài hát sử dụng API Genius.
   + Chức năng lưu và load lời bài hát.
+
+link github: https://github.com/tuan-cre/LHT-PLAYER
