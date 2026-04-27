@@ -3,3 +3,9 @@
 /lyrics/
 /build/
 /dist/
+.venv/
+__pycache__/
+*.log
+*.spec
+.env
+.code-review-graph/

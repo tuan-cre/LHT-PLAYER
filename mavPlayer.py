@@ -5,18 +5,32 @@ import threading
 import random
 from pathlib import Path
 import logging
+import warnings
+import subprocess
 
+# Suppress ffmpeg/swscaler warnings from Qt Multimedia
+os.environ['AV_LOG_LEVEL'] = '16'  # AV_LOG_ERROR
+os.environ['FFMPEG_LOG_LEVEL'] = 'error'
+os.environ['QT_LOGGING_RULES'] = 'qt.multimedia.ffmpeg.warning=false'
+os.environ['QT_FFMPEG_COLOR_RANGE'] = 'limited'
+os.environ['QT_MULTIMEDIA_FFMPEG_OPTS'] = 'format=nv12,range=tv'
 os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')
 os.environ.setdefault('QT_QPA_PLATFORMTHEME', 'generic')
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler('debug.log'),
-        logging.StreamHandler()
-    ]
-)
+warnings.filterwarnings("ignore")
+logging.getLogger('py.warnings').setLevel(logging.CRITICAL)
+
+def fix_ffmpeg_deprecated_warning():
+    try:
+        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+        logging.debug(f"FFmpeg version: {result.stdout[:100] if result.stdout else 'N/A'}")
+    except Exception:
+        pass
+
+try:
+    fix_ffmpeg_deprecated_warning()
+except:
+    pass
 logger = logging.getLogger(__name__)
 
 from PyQt6.QtWidgets import (
@@ -43,23 +57,21 @@ init_directories()
 
 class ClickableSlider(QSlider):
     def mousePressEvent(self, event):
+        super().mousePressEvent(event)
         if event.button() == Qt.MouseButton.LeftButton:
             value = self.valueFromPosition(event.position().x())
             self.setValue(value)
-            self.setSliderPosition(value)
-            self.sliderPressed.emit()
-            event.accept()
+            
             try:
-                main_window = self.main_window
-                length = main_window.media_player.duration()
-                if length > 0:
-                    position = value / 1000 * length
-                    main_window.media_player.setPosition(int(position))
+                main_window = getattr(self, 'main_window', None)
+                if main_window and hasattr(main_window, 'media_player'):
+                    length = main_window.media_player.duration()
+                    if length > 0:
+                        position = value / 1000 * length
+                        main_window.media_player.setPosition(int(position))
             except Exception as e:
                 logger.error(f"Slider error: {e}")
                 pass
-        else:
-            super().mousePressEvent(event)
 
     def valueFromPosition(self, x):
         return int((x / self.width()) * (self.maximum() - self.minimum()) + self.minimum())
@@ -84,6 +96,9 @@ class Worker(QObject):
 
 
 class MainWindow(QMainWindow):
+    lyrics_fetched = pyqtSignal(str)
+    lyrics_error = pyqtSignal(str)
+    
     def __init__(self):
         super().__init__()
         self.setWindowTitle("mavPlayer")
@@ -93,9 +108,10 @@ class MainWindow(QMainWindow):
         self.currently_playing = None
         self.is_playing = False
         self.is_paused = False
-        self.auto_play_next = True
+        self.loop_current = False
         self.shuffle_mode = False
         self.is_changing_track = False
+        self.is_video_fullscreen = False
 
         # Initialize QMediaPlayer
         self.media_player = QMediaPlayer()
@@ -105,6 +121,10 @@ class MainWindow(QMainWindow):
 
         self.setup_ui()
         self.setup_dark_theme()
+
+        # Connect signals
+        self.lyrics_fetched.connect(self.display_lyrics)
+        self.lyrics_error.connect(self.on_lyrics_error)
 
     def setup_dark_theme(self):
         dark_palette = QPalette()
@@ -321,11 +341,21 @@ class MainWindow(QMainWindow):
         self.btn_shuffle.setStyleSheet(btn_style)
         self.btn_shuffle.clicked.connect(self.toggle_shuffle)
 
-        self.btn_auto = QPushButton("🔁")
-        self.btn_auto.setCheckable(True)
-        self.btn_auto.setChecked(True)
-        self.btn_auto.setStyleSheet(btn_style)
-        self.btn_auto.clicked.connect(self.toggle_auto_play_next)
+        self.btn_loop = QPushButton("🔂")
+        self.btn_loop.setCheckable(True)
+        self.btn_loop.setChecked(False)
+        self.btn_loop.setStyleSheet("""
+            QPushButton {
+                background-color: #3d3d3d;
+                color: white;
+                border: none;
+                padding: 8px 12px;
+                border-radius: 4px;
+                font-size: 14px;
+                min-width: 50px;
+            }
+        """)
+        self.btn_loop.clicked.connect(self.toggle_loop_current)
 
         btn_stop = QPushButton("⏹ Stop")
         btn_stop.setStyleSheet(btn_style)
@@ -336,7 +366,7 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(btn_next)
         btn_layout.addStretch()
         btn_layout.addWidget(self.btn_shuffle)
-        btn_layout.addWidget(self.btn_auto)
+        btn_layout.addWidget(self.btn_loop)
         btn_layout.addWidget(btn_stop)
 
         layout.addLayout(btn_layout)
@@ -375,19 +405,83 @@ class MainWindow(QMainWindow):
             self.download_video_youtube,
             self.delete_video
         )
+        self.video_toolbar.layout().insertWidget(0, self.create_video_sidebar_toggle())
         layout.addWidget(self.video_toolbar)
 
-        self.video_widget = QVideoWidget(self.video_tab)
+        video_content = QWidget(self.video_tab)
+        video_layout = QHBoxLayout(video_content)
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        video_layout.setSpacing(0)
+
+        self.video_widget = QVideoWidget(video_content)
         self.video_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        layout.addWidget(self.video_widget, stretch=2)
+        self.video_widget.setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
+        video_layout.addWidget(self.video_widget, stretch=3)
         
         self.media_player.setVideoOutput(self.video_widget)
 
-        self.video_list = self.create_list(self.video_tab)
+        self.video_list_container = QFrame(video_content)
+        self.video_list_container.setStyleSheet("background-color: #1e1e1e;")
+        list_layout = QVBoxLayout(self.video_list_container)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        list_layout.setSpacing(0)
+
+        list_header = QFrame(self.video_list_container)
+        list_header.setStyleSheet("background-color: #2d2d2d;")
+        list_header.setFixedHeight(40)
+        header_layout = QHBoxLayout(list_header)
+        header_layout.setContentsMargins(10, 5, 10, 5)
+
+        lbl = QLabel("Video List")
+        lbl.setStyleSheet("color: white; font-weight: bold;")
+        header_layout.addWidget(lbl)
+        header_layout.addStretch()
+
+        list_layout.addWidget(list_header)
+
+        self.video_list = self.create_list(self.video_list_container)
         self.video_list.itemDoubleClicked.connect(self.play_video)
-        layout.addWidget(self.video_list, stretch=1)
+        list_layout.addWidget(self.video_list)
+
+        video_layout.addWidget(self.video_list_container, stretch=1)
+
+        layout.addWidget(video_content, stretch=1)
 
         self.load_video_list()
+
+    def create_video_sidebar_toggle(self):
+        self.btn_toggle_list = QPushButton("◧")
+        self.btn_toggle_list.setStyleSheet("""
+            QPushButton {
+                background-color: #3d3d3d;
+                color: white;
+                border: none;
+                padding: 5px 10px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #4d4d4d;
+            }
+        """)
+        self.btn_toggle_list.setFixedWidth(35)
+        self.btn_toggle_list.clicked.connect(self.toggle_video_list)
+        return self.btn_toggle_list
+
+    def toggle_video_list(self):
+        if self.video_list_container.isVisible():
+            self.video_list_container.hide()
+            self.btn_toggle_list.setText("⊞")
+        else:
+            self.video_list_container.show()
+            self.btn_toggle_list.setText("◧")
+
+    def toggle_video_fullscreen(self):
+        if self.is_video_fullscreen:
+            self.showNormal()
+            self.is_video_fullscreen = False
+        else:
+            self.showFullScreen()
+            self.is_video_fullscreen = True
 
     def setup_lyrics_tab(self):
         layout = QVBoxLayout(self.lyrics_tab)
@@ -415,7 +509,7 @@ class MainWindow(QMainWindow):
         self.song_title_input.setFixedWidth(200)
 
         self.artist_input = QLineEdit()
-        self.artist_input.setPlaceholderText("Artist (optional)...")
+        self.artist_input.setPlaceholderText("Artist...")
         self.artist_input.setStyleSheet(input_style)
         self.artist_input.setFixedWidth(200)
 
@@ -656,22 +750,26 @@ class MainWindow(QMainWindow):
             logger.error(f"update_on_play error: {e}")
 
     def prev_track(self):
-        if self.current_tab == "music":
-            self.prev_music()
-        elif self.current_tab == "video":
+        if self.video_list.count() > 0 and self.currently_playing and "video" in str(self.currently_playing).lower():
             self.prev_video()
+        else:
+            self.prev_music()
 
     def next_track(self):
-        if self.current_tab == "music":
-            self.next_music()
-        elif self.current_tab == "video":
+        if self.video_list.count() > 0 and self.currently_playing and "video" in str(self.currently_playing).lower():
             self.next_video()
+        else:
+            self.next_music()
+
+    def replay_current_track(self):
+        if self.currently_playing:
+            self.play_file(str(self.currently_playing))
 
     def stop_playback(self):
-        if self.current_tab == "music":
-            self.stop_music()
-        elif self.current_tab == "video":
+        if self.video_list.count() > 0 and self.currently_playing and "video" in str(self.currently_playing).lower():
             self.stop_video()
+        else:
+            self.stop_music()
 
     def toggle_shuffle(self):
         self.shuffle_mode = self.btn_shuffle.isChecked()
@@ -700,13 +798,40 @@ class MainWindow(QMainWindow):
                 }
             """)
 
-    def toggle_auto_play_next(self):
-        self.auto_play_next = self.btn_auto.isChecked()
+    def toggle_loop_current(self):
+        self.loop_current = self.btn_loop.isChecked()
+        if self.loop_current:
+            self.btn_loop.setStyleSheet("""
+                QPushButton {
+                    background-color: #2a5ca6;
+                    color: white;
+                    border: none;
+                    padding: 8px 12px;
+                    border-radius: 4px;
+                    font-size: 14px;
+                    min-width: 50px;
+                }
+            """)
+        else:
+            self.btn_loop.setStyleSheet("""
+                QPushButton {
+                    background-color: #3d3d3d;
+                    color: white;
+                    border: none;
+                    padding: 8px 12px;
+                    border-radius: 4px;
+                    font-size: 14px;
+                    min-width: 50px;
+                }
+            """)
 
     def prev_music(self):
         current_row = self.music_list.currentRow()
         if current_row > 0:
             self.music_list.setCurrentRow(current_row - 1)
+            self.play_music()
+        elif self.music_list.count() > 0:
+            self.music_list.setCurrentRow(self.music_list.count() - 1)
             self.play_music()
 
     def prev_video(self):
@@ -714,12 +839,16 @@ class MainWindow(QMainWindow):
         if current_row > 0:
             self.video_list.setCurrentRow(current_row - 1)
             self.play_video()
+        elif self.video_list.count() > 0:
+            self.video_list.setCurrentRow(self.video_list.count() - 1)
+            self.play_video()
 
     def next_music(self):
         if self.shuffle_mode and self.music_list.count() > 1:
             choices = list(range(self.music_list.count()))
             current = self.music_list.currentRow()
-            choices.remove(current)
+            if current in choices:
+                choices.remove(current)
             self.music_list.setCurrentRow(random.choice(choices))
             self.play_music()
         else:
@@ -727,18 +856,25 @@ class MainWindow(QMainWindow):
             if current_row < self.music_list.count() - 1:
                 self.music_list.setCurrentRow(current_row + 1)
                 self.play_music()
+            elif self.music_list.count() > 0:
+                self.music_list.setCurrentRow(0)
+                self.play_music()
 
     def next_video(self):
         if self.shuffle_mode and self.video_list.count() > 1:
             choices = list(range(self.video_list.count()))
             current = self.video_list.currentRow()
-            choices.remove(current)
+            if current in choices:
+                choices.remove(current)
             self.video_list.setCurrentRow(random.choice(choices))
             self.play_video()
         else:
             current_row = self.video_list.currentRow()
             if current_row < self.video_list.count() - 1:
                 self.video_list.setCurrentRow(current_row + 1)
+                self.play_video()
+            elif self.video_list.count() > 0:
+                self.video_list.setCurrentRow(0)
                 self.play_video()
 
     def stop_music(self):
@@ -805,10 +941,14 @@ class MainWindow(QMainWindow):
                 self.current_time_label.setText(self.format_time(current))
                 self.total_time_label.setText(self.format_time(length))
                 
-                if self.auto_play_next and current >= length - 2000 and not self.is_changing_track:
-                    logger.debug("Playback ending soon, triggering next track")
+                if current >= length - 500 and not self.is_changing_track:
                     self.is_changing_track = True
-                    QTimer.singleShot(2000, self.next_track)
+                    if self.loop_current:
+                        logger.debug("Playback ending soon, looping current track")
+                        QTimer.singleShot(500, self.replay_current_track)
+                    else:
+                        logger.debug("Playback ending soon, triggering next track")
+                        QTimer.singleShot(500, self.next_track)
         except Exception as e:
             # logger.error(f"update_slider error: {e}")
             pass
@@ -823,6 +963,10 @@ class MainWindow(QMainWindow):
             if length > 0:
                 position = self.seek_slider.value() / 1000 * length
                 self.media_player.setPosition(int(position))
+                
+                # If we were playing but the media stopped (e.g. at the end), resume playing
+                if self.is_playing and self.media_player.playbackState() == QMediaPlayer.PlaybackState.StoppedState:
+                    self.media_player.play()
         except Exception as e:
             pass
 
@@ -842,24 +986,17 @@ class MainWindow(QMainWindow):
             return
 
         artist = self.artist_input.text().strip()
+        if not artist:
+            QMessageBox.warning(self, "Error", "Please enter an artist name")
+            return
 
         def do_fetch():
             try:
-                artist_param = artist.replace(" ", "%20") if artist else ""
-                title_param = title.replace(" ", "%20")
-                url = f"https://api.lyrics.ovh/v1/{artist_param}/{title_param}" if artist else f"https://api.lyrics.ovh/v1/{title_param}"
-                
-                response = requests.get(url, timeout=10)
-                if response.status_code == 200:
-                    data = response.json()
-                    if "lyrics" in data:
-                        QTimer.singleShot(0, lambda: self.display_lyrics(data["lyrics"]))
-                    else:
-                        QTimer.singleShot(0, lambda: self.on_lyrics_error("No lyrics found"))
-                else:
-                    QTimer.singleShot(0, lambda: self.on_lyrics_error(f"Status: {response.status_code}"))
+                from genius_lyrics import fetch_lyrics as get_genius_lyrics
+                lyrics = get_genius_lyrics(title, artist)
+                self.lyrics_fetched.emit(lyrics)
             except Exception as e:
-                QTimer.singleShot(0, lambda: self.on_lyrics_error(str(e)))
+                self.lyrics_error.emit(str(e))
 
         threading.Thread(target=do_fetch, daemon=True).start()
 
