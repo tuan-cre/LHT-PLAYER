@@ -27,9 +27,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QUrl, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QIcon, QColor, QPalette, QAction, QMouseEvent
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PyQt6.QtMultimediaWidgets import QVideoWidget
 
 import yt_dlp
-import vlc
 import requests
 
 import config
@@ -50,13 +51,12 @@ class ClickableSlider(QSlider):
             event.accept()
             try:
                 main_window = self.main_window
-                length = main_window.media_player.get_length()
-                if length <= 0:
-                    length = main_window.media_player.length()
+                length = main_window.media_player.duration()
                 if length > 0:
                     position = value / 1000 * length
-                    main_window.media_player.set_time(int(position))
-            except Exception:
+                    main_window.media_player.setPosition(int(position))
+            except Exception as e:
+                logger.error(f"Slider error: {e}")
                 pass
         else:
             super().mousePressEvent(event)
@@ -97,17 +97,11 @@ class MainWindow(QMainWindow):
         self.shuffle_mode = False
         self.is_changing_track = False
 
-        # Initialize VLC instance with parameters to ensure it embeds properly
-        vlc_args = []
-        if sys.platform.startswith('linux'):
-            vlc_args.extend(['--no-xlib'])
-            # Unset WAYLAND_DISPLAY so VLC doesn't try to use Wayland output
-            # which would cause it to ignore set_xwindow and open a new window
-            if 'WAYLAND_DISPLAY' in os.environ:
-                del os.environ['WAYLAND_DISPLAY']
-
-        self.vlc_instance = vlc.Instance(*vlc_args)
-        self.media_player = self.vlc_instance.media_player_new()
+        # Initialize QMediaPlayer
+        self.media_player = QMediaPlayer()
+        self.audio_output = QAudioOutput()
+        self.media_player.setAudioOutput(self.audio_output)
+        self.audio_output.setVolume(1.0)
 
         self.setup_ui()
         self.setup_dark_theme()
@@ -383,22 +377,15 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self.video_toolbar)
 
-        self.video_frame = QFrame(self.video_tab)
-        self.video_frame.setStyleSheet("background-color: black;")
-        self.video_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.video_frame.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
-        layout.addWidget(self.video_frame, stretch=2)
+        self.video_widget = QVideoWidget(self.video_tab)
+        self.video_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(self.video_widget, stretch=2)
+        
+        self.media_player.setVideoOutput(self.video_widget)
 
         self.video_list = self.create_list(self.video_tab)
         self.video_list.itemDoubleClicked.connect(self.play_video)
         layout.addWidget(self.video_list, stretch=1)
-
-        if sys.platform.startswith('linux'):
-            self.media_player.set_xwindow(int(self.video_frame.winId()))
-        elif sys.platform == "win32":
-            self.media_player.set_hwnd(int(self.video_frame.winId()))
-        elif sys.platform == "darwin":
-            self.media_player.set_nsobject(int(self.video_frame.winId()))
 
         self.load_video_list()
 
@@ -646,15 +633,7 @@ class MainWindow(QMainWindow):
         self.current_time_label.setText("0:00")
         self.is_changing_track = False
         if os.path.exists(path):
-            media = self.vlc_instance.media_new(path)
-            self.media_player.set_media(media)
-
-            if sys.platform.startswith('linux'):
-                self.media_player.set_xwindow(int(self.video_frame.winId()))
-            elif sys.platform == "win32":
-                self.media_player.set_hwnd(int(self.video_frame.winId()))
-            elif sys.platform == "darwin":
-                self.media_player.set_nsobject(int(self.video_frame.winId()))
+            self.media_player.setSource(QUrl.fromLocalFile(path))
 
             self.media_player.play()
             self.update_timer.start(250)
@@ -666,13 +645,13 @@ class MainWindow(QMainWindow):
 
     def update_on_play(self):
         try:
-            length = self.media_player.get_length()
-            logger.debug(f"update_on_play: get_length returned {length}")
+            length = self.media_player.duration()
+            logger.debug(f"update_on_play: duration returned {length}")
             if length > 0:
                 self.total_time_label.setText(self.format_time(length))
                 logger.debug(f"Total time set to: {self.format_time(length)}")
             else:
-                logger.warning("update_on_play: length <= 0")
+                logger.warning("update_on_play: duration <= 0")
         except Exception as e:
             logger.error(f"update_on_play error: {e}")
 
@@ -813,14 +792,11 @@ class MainWindow(QMainWindow):
 
     def update_slider_position(self):
         try:
-            length = self.media_player.get_length()
-            current = self.media_player.get_time()
+            length = self.media_player.duration()
+            current = self.media_player.position()
             
-            logger.debug(f"update_slider: length={length}, current={current}")
-            
-            if length <= 0:
-                length = self.media_player.length()
-                logger.debug(f"update_slider: fallback length={length}")
+            # Reduce spamming in logs
+            # logger.debug(f"update_slider: length={length}, current={current}")
             
             if length > 0 and current >= 0 and not self.slider_dragging:
                 self.seek_slider.blockSignals(True)
@@ -832,12 +808,10 @@ class MainWindow(QMainWindow):
                 if self.auto_play_next and current >= length - 2000 and not self.is_changing_track:
                     logger.debug("Playback ending soon, triggering next track")
                     self.is_changing_track = True
-                    QTimer.singleShot(0, self.next_track)
-                    QTimer.singleShot(500, lambda: self.__dict__.update({'is_changing_track': False}))
-            elif length > 0 and not self.slider_dragging:
-                self.total_time_label.setText(self.format_time(length))
+                    QTimer.singleShot(2000, self.next_track)
         except Exception as e:
-            logger.error(f"update_slider_position error: {e}")
+            # logger.error(f"update_slider error: {e}")
+            pass
 
     def slider_pressed(self):
         self.slider_dragging = True
@@ -845,20 +819,16 @@ class MainWindow(QMainWindow):
     def slider_released(self):
         self.slider_dragging = False
         try:
-            length = self.media_player.get_length()
-            if length <= 0:
-                length = self.media_player.length()
+            length = self.media_player.duration()
             if length > 0:
                 position = self.seek_slider.value() / 1000 * length
-                self.media_player.set_time(int(position))
+                self.media_player.setPosition(int(position))
         except Exception as e:
             pass
 
     def seek_position(self, value):
         try:
-            length = self.media_player.get_length()
-            if length <= 0:
-                length = self.media_player.length()
+            length = self.media_player.duration()
             if length > 0:
                 position = value / 1000 * length
                 self.current_time_label.setText(self.format_time(int(position)))
