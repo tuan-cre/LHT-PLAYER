@@ -97,7 +97,16 @@ class MainWindow(QMainWindow):
         self.shuffle_mode = False
         self.is_changing_track = False
 
-        self.vlc_instance = vlc.Instance()
+        # Initialize VLC instance with parameters to ensure it embeds properly
+        vlc_args = []
+        if sys.platform.startswith('linux'):
+            vlc_args.extend(['--no-xlib'])
+            # Unset WAYLAND_DISPLAY so VLC doesn't try to use Wayland output
+            # which would cause it to ignore set_xwindow and open a new window
+            if 'WAYLAND_DISPLAY' in os.environ:
+                del os.environ['WAYLAND_DISPLAY']
+
+        self.vlc_instance = vlc.Instance(*vlc_args)
         self.media_player = self.vlc_instance.media_player_new()
 
         self.setup_ui()
@@ -377,6 +386,7 @@ class MainWindow(QMainWindow):
         self.video_frame = QFrame(self.video_tab)
         self.video_frame.setStyleSheet("background-color: black;")
         self.video_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.video_frame.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
         layout.addWidget(self.video_frame, stretch=2)
 
         self.video_list = self.create_list(self.video_tab)
