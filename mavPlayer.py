@@ -1,462 +1,929 @@
-from tkinter import *
-from tkinter import filedialog, simpledialog, messagebox, ttk
-from pytubefix import YouTube
-from pydub import AudioSegment
-import lyricsgenius
+import sys
+import os
+import shutil
+import threading
+import random
+from pathlib import Path
+import logging
+
+os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')
+os.environ.setdefault('QT_QPA_PLATFORMTHEME', 'generic')
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler('debug.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QTabWidget, QListWidget, QListWidgetItem, QPushButton, QLineEdit,
+    QLabel, QMessageBox, QFileDialog, QInputDialog, QFrame,
+    QSlider, QStyle, QSizePolicy
+)
+from PyQt6.QtCore import Qt, QUrl, QTimer, pyqtSignal, QObject
+from PyQt6.QtGui import QIcon, QColor, QPalette, QAction, QMouseEvent
+
+import yt_dlp
 import vlc
-import os, shutil
+import requests
 
-class MusicPlayer:
-    def __init__(self, root):
+import config
+from config import (
+    init_directories,
+    get_music_dir, get_video_dir, get_lyrics_dir
+)
 
-        self.root = root
-        self.root.title("mavPlayer")
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        center_x = int(screen_width / 2 - 900 / 2)
-        center_y = int(screen_height / 2 - 600/ 2)
-        root.geometry(f'900x600+{center_x}+{center_y}')
-        self.root.resizable(False, False) 
+init_directories()
 
-        self.genius = lyricsgenius.Genius("I1Skzzd5zK9eEuzOojzk-t_z_cFb9FhkAykiHQKFTRhpwpj-gcOYRgX23Dz2pWOT7jF9H9Nd-p3gKAnMEMUSOg")
+class ClickableSlider(QSlider):
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            value = self.valueFromPosition(event.position().x())
+            self.setValue(value)
+            self.setSliderPosition(value)
+            self.sliderPressed.emit()
+            event.accept()
+            try:
+                main_window = self.main_window
+                length = main_window.media_player.get_length()
+                if length <= 0:
+                    length = main_window.media_player.length()
+                if length > 0:
+                    position = value / 1000 * length
+                    main_window.media_player.set_time(int(position))
+            except Exception:
+                pass
+        else:
+            super().mousePressEvent(event)
 
-        os.makedirs("music", exist_ok=True)
-        os.makedirs("video", exist_ok=True)
-        os.makedirs("lyrics", exist_ok=True)
+    def valueFromPosition(self, x):
+        return int((x / self.width()) * (self.maximum() - self.minimum()) + self.minimum())
 
-        self.music_directory = "music"
-        self.video_directory = "video"
-        self.lyric_directory = "lyrics"
 
-        self.videos = []
-        self.songs = []
+class Worker(QObject):
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    progress = pyqtSignal(str)
 
-        self.instance = vlc.Instance()
-        self.mediaplayer = self.instance.media_player_new()
-        self.songplayer = self.instance.media_player_new()
+    def __init__(self, func, *args):
+        super().__init__()
+        self.func = func
+        self.args = args
 
-        self.song_title = StringVar()
-        self.artist_name = StringVar()
+    def run(self):
+        try:
+            self.func(*self.args)
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(str(e))
 
-        self.highlighted_label = None
 
-        self.create_widgets()
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("mavPlayer")
+        self.resize(1000, 700)
 
-    def create_widgets(self):
+        self.current_tab = "music"
+        self.currently_playing = None
+        self.is_playing = False
+        self.is_paused = False
+        self.auto_play_next = True
+        self.shuffle_mode = False
+        self.is_changing_track = False
 
-        self.navbar = Frame(self.root, bg="#FCF7D2", width=200)
-        self.navbar.pack(fill=Y, side=LEFT)
+        self.vlc_instance = vlc.Instance()
+        self.media_player = self.vlc_instance.media_player_new()
 
-        Button(self.navbar, text="♫ Music ♫", width=20, padx=10, pady=10, background='lightblue', command=lambda: self.change_tab("music"), bd=2, relief=RAISED, fg='black', font=('Consolas', 10, 'bold')).pack(padx=10, pady=10)
-        Button(self.navbar, text="▶ Video ▶", width=20, padx=10, pady=10, background='lightblue', command=lambda: self.change_tab("video"), bd=2, relief=RAISED, fg='black', font=('Consolas', 10, 'bold')).pack(padx=10, pady=0)
-        Button(self.navbar, text="𝄙 Lyric 𝄙", width=20, padx=10, pady=10, background='lightblue', command=lambda: self.change_tab("lyric"), bd=2, relief=RAISED, fg='black', font=('Consolas', 10, 'bold')).pack(padx=10, pady=10)
+        self.setup_ui()
+        self.setup_dark_theme()
 
-        self.notebook = ttk.Notebook(self.root, style="TNotebook")
-        self.notebook.pack(fill=BOTH, expand=True)
+    def setup_dark_theme(self):
+        dark_palette = QPalette()
+        dark_palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
+        dark_palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.Base, QColor(45, 45, 45))
+        dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(35, 35, 35))
+        dark_palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(25, 25, 25))
+        dark_palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.Button, QColor(50, 50, 50))
+        dark_palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
+        dark_palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
+        dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
+        dark_palette.setColor(QPalette.ColorRole.HighlightedText, QColor(35, 35, 35))
+        self.setPalette(dark_palette)
 
-        self.music_tab = Frame(self.notebook, bg="gray")
-        self.video_tab = Frame(self.notebook, bg="gray")
-        self.lyrics_tab = Frame(self.notebook, bg="gray")
+    def setup_ui(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        self.notebook.add(self.music_tab, text="Music")
-        self.notebook.add(self.video_tab, text="Video")
-        self.notebook.add(self.lyrics_tab, text="Lyric")
-        self.notebook.place(relwidth=0.8, relheight=1.1, x=185, y=-23)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setTabPosition(QTabWidget.TabPosition.North)
+        main_layout.addWidget(self.tabs)
+
+        self.music_tab = QWidget()
+        self.video_tab = QWidget()
+        self.lyrics_tab = QWidget()
+
+        self.tabs.addTab(self.music_tab, "♫ Music")
+        self.tabs.addTab(self.video_tab, "▶ Video")
+        self.tabs.addTab(self.lyrics_tab, "𝄙 Lyrics")
+
+        self.tabs.currentChanged.connect(self.on_tab_changed)
 
         self.setup_music_tab()
-        self.setup_lyrics_tab()
         self.setup_video_tab()
-        self.notebook.select(self.music_tab)
+        self.setup_lyrics_tab()
+        self.setup_controls()
+
+    def on_tab_changed(self, index):
+        tabs = ["music", "video", "lyric"]
+        if index < len(tabs):
+            self.current_tab = tabs[index]
+
+    def setup_controls(self):
+        controls = self.create_controls(
+            self,
+            self.prev_track,
+            self.next_track,
+            self.stop_playback
+        )
+        main_layout = self.centralWidget().layout()
+        main_layout.addWidget(controls)
+
+    def create_toolbar(self, parent, add_folder_cb, add_file_cb, youtube_cb, delete_cb):
+        toolbar = QFrame(parent)
+        toolbar.setStyleSheet("background-color: #2d2d2d;")
+        toolbar.setFixedHeight(60)
+        layout = QHBoxLayout(toolbar)
+        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setSpacing(10)
+
+        btn_style = """
+            QPushButton {
+                background-color: #3d3d3d;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #4d4d4d;
+            }
+            QPushButton:pressed {
+                background-color: #2a5ca6;
+            }
+        """
+
+        btn_add_folder = QPushButton("🗁 Add Folder")
+        btn_add_folder.setStyleSheet(btn_style)
+        btn_add_folder.clicked.connect(add_folder_cb)
+
+        btn_add_file = QPushButton("➕ Add Files")
+        btn_add_file.setStyleSheet(btn_style)
+        btn_add_file.clicked.connect(add_file_cb)
+
+        btn_youtube = QPushButton("⬇ YouTube")
+        btn_youtube.setStyleSheet(btn_style)
+        btn_youtube.clicked.connect(youtube_cb)
+
+        btn_delete = QPushButton("🗑 Delete")
+        btn_delete.setStyleSheet(btn_style)
+        btn_delete.clicked.connect(delete_cb)
+
+        layout.addWidget(btn_add_folder)
+        layout.addWidget(btn_add_file)
+        layout.addWidget(btn_youtube)
+        layout.addStretch()
+        layout.addWidget(btn_delete)
+
+        return toolbar
+
+    def create_list(self, parent):
+        lst = QListWidget(parent)
+        lst.setStyleSheet("""
+            QListWidget {
+                background-color: #1e1e1e;
+                color: white;
+                border: none;
+                padding: 5px;
+            }
+            QListWidget::item {
+                padding: 8px;
+                border-bottom: 1px solid #3d3d3d;
+            }
+            QListWidget::item:selected {
+                background-color: #2a5ca6;
+            }
+            QListWidget::item:hover {
+                background-color: #3d3d3d;
+            }
+        """)
+        return lst
+
+    def create_controls(self, parent, prev_cb, next_cb, stop_cb):
+        controls = QFrame(parent)
+        controls.setStyleSheet("background-color: #2d2d2d;")
+        controls.setFixedHeight(90)
+        layout = QVBoxLayout(controls)
+        layout.setContentsMargins(20, 10, 20, 10)
+        layout.setSpacing(10)
+
+        slider_layout = QHBoxLayout()
+        slider_layout.setSpacing(10)
+
+        self.current_time_label = QLabel("0:00")
+        self.current_time_label.setStyleSheet("color: white; font-size: 12px;")
+        self.current_time_label.setFixedWidth(40)
+
+        self.seek_slider = ClickableSlider(Qt.Orientation.Horizontal)
+        self.seek_slider.main_window = self
+        self.seek_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                height: 6px;
+                background: #555;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                width: 14px;
+                margin: -4px 0;
+                background: #2a5ca6;
+                border-radius: 7px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #2a5ca6;
+                border-radius: 3px;
+            }
+        """)
+        self.seek_slider.setRange(0, 1000)
+        self.seek_slider.sliderMoved.connect(self.seek_position)
+        self.seek_slider.sliderPressed.connect(self.slider_pressed)
+        self.seek_slider.sliderReleased.connect(self.slider_released)
+
+        self.total_time_label = QLabel("0:00")
+        self.total_time_label.setStyleSheet("color: white; font-size: 12px;")
+        self.total_time_label.setFixedWidth(40)
+
+        slider_layout.addWidget(self.current_time_label)
+        slider_layout.addWidget(self.seek_slider, 1)
+        slider_layout.addWidget(self.total_time_label)
+
+        layout.addLayout(slider_layout)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(15)
+
+        btn_style = """
+            QPushButton {
+                background-color: #3d3d3d;
+                color: white;
+                border: none;
+                padding: 8px 12px;
+                border-radius: 4px;
+                font-size: 14px;
+                min-width: 50px;
+            }
+            QPushButton:hover {
+                background-color: #4d4d4d;
+            }
+        """
+
+        btn_prev = QPushButton("⏮")
+        btn_prev.setStyleSheet(btn_style)
+        btn_prev.clicked.connect(prev_cb)
+
+        self.btn_play = QPushButton("▶ Play")
+        self.btn_play.setStyleSheet(btn_style)
+        self.btn_play.clicked.connect(self.toggle_play_pause)
+
+        btn_next = QPushButton("⏭")
+        btn_next.setStyleSheet(btn_style)
+        btn_next.clicked.connect(next_cb)
+
+        self.btn_shuffle = QPushButton("🔀")
+        self.btn_shuffle.setCheckable(True)
+        self.btn_shuffle.setChecked(False)
+        self.btn_shuffle.setStyleSheet(btn_style)
+        self.btn_shuffle.clicked.connect(self.toggle_shuffle)
+
+        self.btn_auto = QPushButton("🔁")
+        self.btn_auto.setCheckable(True)
+        self.btn_auto.setChecked(True)
+        self.btn_auto.setStyleSheet(btn_style)
+        self.btn_auto.clicked.connect(self.toggle_auto_play_next)
+
+        btn_stop = QPushButton("⏹ Stop")
+        btn_stop.setStyleSheet(btn_style)
+        btn_stop.clicked.connect(stop_cb)
+
+        btn_layout.addWidget(btn_prev)
+        btn_layout.addWidget(self.btn_play)
+        btn_layout.addWidget(btn_next)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_shuffle)
+        btn_layout.addWidget(self.btn_auto)
+        btn_layout.addWidget(btn_stop)
+
+        layout.addLayout(btn_layout)
+
+        self.slider_dragging = False
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self.update_slider_position)
+
+        return controls
 
     def setup_music_tab(self):
+        layout = QVBoxLayout(self.music_tab)
 
-        self.config_frame = Frame(self.music_tab, bg="gray")
-        self.config_frame.pack(fill=X, pady=5)
+        self.music_toolbar = self.create_toolbar(
+            self.music_tab,
+            self.add_music_folder,
+            self.add_music_files,
+            self.download_music_youtube,
+            self.delete_music
+        )
+        layout.addWidget(self.music_toolbar)
 
-        Button(self.config_frame, text="🗁 Thêm thư mục", command=self.add_song_folder, bd=0, width=20, background='white').pack(side=LEFT, padx=10, pady=10)
-        Button(self.config_frame, text="♪ Thêm tệp mp3", command=self.add_mp3_file, bd=0, width=20, background='white').pack(side=LEFT, padx=25, pady=10)
-        Button(self.config_frame, text="⬇ Tải từ youtube", command=lambda: self.download_mp3(), bd=0, width=20, background='white').pack(side=LEFT, padx=(13, 25), pady=10)
-        Button(self.config_frame, text="✘ Xóa bài hát", command=lambda: self.delete_selected_file("mp3"), bd=0, width=20, background='white').pack(side=RIGHT, padx=10, pady=10)
+        self.music_list = self.create_list(self.music_tab)
+        self.music_list.itemDoubleClicked.connect(self.play_music)
+        layout.addWidget(self.music_list)
 
-        self.song_frame = Frame(self.music_tab, bg="white")
-        self.song_frame.pack(fill=BOTH, expand=True, padx=10, pady=0)
-
-        self.song_canvas = Canvas(self.song_frame, bg="gray", highlightthickness=0)
-        self.song_canvas.pack(side=LEFT, fill=BOTH, expand=True, padx=2, pady=2)
-
-        self.scrollbar = Scrollbar(self.song_frame, orient=VERTICAL, command=self.song_canvas.yview)
-        self.song_canvas.config(yscrollcommand=self.scrollbar.set)
-
-        self.song_container = Frame(self.song_canvas, bg="gray")
-        self.song_canvas.create_window((0, 0), window=self.song_container, anchor="nw")
-        self.song_container.bind("<Configure>", lambda e: self.song_canvas.configure(scrollregion=self.song_canvas.bbox("all")))
-        self.song_canvas.bind_all("<MouseWheel>", self.mouse_wheel)
-
-        self.control_frame = Frame(self.music_tab, bg="gray")
-        self.control_frame.pack(fill=X, pady=(0, 35))
-
-        Button(self.control_frame, text="Play", width=20, background='white', bd=0, command=self.play_song).pack(side=LEFT, padx=10, pady=10)
-        Button(self.control_frame, text="⏮", width=6, background='white', bd=2, command=self.rewind_song).pack(side=LEFT, padx=(100, 10), pady=10)
-        Button(self.control_frame, text="[▷]", width=6, background='white', bd=2, command=self.pause_resume_song).pack(side=LEFT, padx=10, pady=10)
-        Button(self.control_frame, text="⏭", width=6, background='white', bd=2, command=self.fast_forward_song).pack(side=LEFT, padx=(10, 100), pady=10)
-        Button(self.control_frame, text="Stop", width=20, background='white', bd=0, command=self.stop_song).pack(side=RIGHT, padx=10, pady=10)
-
-        self.display_songs()
+        self.load_music_list()
 
     def setup_video_tab(self):
-        self.config_frame = Frame(self.video_tab, bg="gray")
-        self.config_frame.pack(fill=X, pady=5)
+        layout = QVBoxLayout(self.video_tab)
 
-        Button(self.config_frame, text="🗁 Thêm thư mục", command=self.add_video_folder, bd=0, width=20, background='white').pack(side=LEFT, padx=10, pady=10)
-        Button(self.config_frame, text="▷Thêm tệp mp4", command=self.add_mp4_file, bd=0, width=20, background='white').pack(side=LEFT, padx=25, pady=10)
-        Button(self.config_frame, text="⬇ Tải từ youtube", command=lambda: self.download_mp4(), bd=0, width=20, background='white').pack(side=LEFT, padx=(13, 25), pady=10)
-        Button(self.config_frame, text="✘ Xóa video", command=lambda: self.delete_selected_file("mp4"), bd=0, width=20, background='white').pack(side=RIGHT, padx=10, pady=10)
+        self.video_toolbar = self.create_toolbar(
+            self.video_tab,
+            self.add_video_folder,
+            self.add_video_files,
+            self.download_video_youtube,
+            self.delete_video
+        )
+        layout.addWidget(self.video_toolbar)
 
-        self.video_frame = Frame(self.video_tab, bg="white")
-        self.video_frame.pack(fill=BOTH, expand=True, padx=10, pady=0)
+        self.video_frame = QFrame(self.video_tab)
+        self.video_frame.setStyleSheet("background-color: black;")
+        self.video_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(self.video_frame, stretch=2)
 
-        self.video_canvas = Canvas(self.video_frame, bg="gray", highlightthickness=0)
-        self.video_canvas.pack(side=LEFT, fill=BOTH, expand=True, padx=2, pady=2)
+        self.video_list = self.create_list(self.video_tab)
+        self.video_list.itemDoubleClicked.connect(self.play_video)
+        layout.addWidget(self.video_list, stretch=1)
 
-        self.video_container = Frame(self.video_canvas, bg="gray")
-        self.video_canvas.create_window((0, 0), window=self.video_container, anchor="nw")
-        
-        self.control_frame = Frame(self.video_tab, bg="gray")
-        self.control_frame.pack(fill=X, pady=(0, 35))
+        if sys.platform.startswith('linux'):
+            self.media_player.set_xwindow(int(self.video_frame.winId()))
+        elif sys.platform == "win32":
+            self.media_player.set_hwnd(int(self.video_frame.winId()))
+        elif sys.platform == "darwin":
+            self.media_player.set_nsobject(int(self.video_frame.winId()))
 
-        Button(self.control_frame, text="Play", width=20, background='white', bd=0, command=self.play_video).pack(side=LEFT, padx=10, pady=10)
-        Button(self.control_frame, text="⏮", width=6, background='white', bd=2, command=self.rewind_video).pack(side=LEFT, padx=(100, 10), pady=10)
-        Button(self.control_frame, text="[▷]", width=6, background='white', bd=2, command=self.pause_resume_video).pack(side=LEFT, padx=10, pady=10)
-        Button(self.control_frame, text="⏭", width=6, background='white', bd=2, command=self.fast_forward_video).pack(side=LEFT, padx=(10, 100), pady=10)
-        Button(self.control_frame, text="Stop", width=20, background='white', bd=0, command=self.stop_video).pack(side=RIGHT, padx=10, pady=10)
-
-        self.video_container.bind("<Configure>", lambda e: self.video_canvas.configure(scrollregion=self.video_canvas.bbox("all")))
-        self.video_canvas.bind_all("<MouseWheel>", self.mouse_wheel)
-
-        self.display_videos()
+        self.load_video_list()
 
     def setup_lyrics_tab(self):
-        
-        self.config_frame = Frame(self.lyrics_tab, bg="gray")
-        self.config_frame.pack(fill=X, pady=5)
+        layout = QVBoxLayout(self.lyrics_tab)
 
-        Button(self.config_frame, text="📜 Trích xuất lời bài hát", command=self.fetch_lyric, bd=0, width=20, background='white').pack(side=LEFT, padx=10, pady=10)
-        song_title_input = Entry(self.config_frame, textvariable=self.song_title, width=25 , background='white')
-        song_title_input.pack(side=LEFT, padx=10, pady=10)
-        self.add_placeholder(song_title_input, "Nhập tên bài hát")
-        artist_name_input = Entry(self.config_frame, textvariable=self.artist_name, width=25, background='white')
-        artist_name_input.pack(side=LEFT, padx=10, pady=10)
-        self.add_placeholder(artist_name_input, "Nhập tên nghệ sĩ")
-        Label(self.config_frame, text="💡Để trống nếu không rõ nghệ sĩ", bg="gray", fg="darkred").pack(side=LEFT, padx=0, pady=10)
+        search_frame = QFrame(self.lyrics_tab)
+        search_frame.setStyleSheet("background-color: #2d2d2d;")
+        search_frame.setFixedHeight(70)
+        search_layout = QHBoxLayout(search_frame)
+        search_layout.setContentsMargins(10, 10, 10, 10)
+        search_layout.setSpacing(10)
 
-        self.lyrics_frame = Frame(self.lyrics_tab, bg="white")
-        self.lyrics_frame.pack(fill=BOTH, expand=True, padx=10, pady=(0))
+        input_style = """
+            QLineEdit {
+                background-color: #3d3d3d;
+                color: white;
+                border: none;
+                padding: 8px;
+                border-radius: 4px;
+            }
+        """
 
-        self.lyrics_canvas = Canvas(self.lyrics_frame, bg="gray", highlightthickness=0)
-        self.lyrics_canvas.pack(side=LEFT, fill=BOTH, expand=True, padx=2, pady=2)
+        self.song_title_input = QLineEdit()
+        self.song_title_input.setPlaceholderText("Song title...")
+        self.song_title_input.setStyleSheet(input_style)
+        self.song_title_input.setFixedWidth(200)
 
-        self.lyrics_container = Frame(self.lyrics_canvas, bg="gray")
-        self.lyrics_canvas.create_window((0, 0), window=self.lyrics_container, anchor="nw")
+        self.artist_input = QLineEdit()
+        self.artist_input.setPlaceholderText("Artist (optional)...")
+        self.artist_input.setStyleSheet(input_style)
+        self.artist_input.setFixedWidth(200)
 
-        self.saveload_frame = Frame(self.lyrics_tab, bg="gray")
-        self.saveload_frame.pack(fill=X, pady=(2, 37))
-        
-        Button(self.saveload_frame, text="💾 Lưu lời bài hát", command=self.save_lyrics, bd=0, width=20, background='white').pack(side=LEFT, padx=10, pady=10)
-        Button(self.saveload_frame, text="📂 Tải lời bài hát", command=self.load_lyrics, bd=0, width=20, background='white').pack(side=RIGHT, padx=10, pady=10)
+        btn_fetch = QPushButton("🔍 Fetch Lyrics")
+        btn_fetch.setStyleSheet("""
+            QPushButton {
+                background-color: #2a5ca6;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #3a6cc6;
+            }
+        """)
+        btn_fetch.clicked.connect(self.fetch_lyrics)
 
-        self.lyrics_canvas.bind("<Configure>", lambda e: self.lyrics_canvas.configure(scrollregion=self.lyrics_canvas.bbox("all")))
-        self.lyrics_canvas.bind_all("<MouseWheel>", self.mouse_wheel)
+        btn_save = QPushButton("💾 Save")
+        btn_save.setStyleSheet("""
+            QPushButton {
+                background-color: #3d3d3d;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #4d4d4d;
+            }
+        """)
+        btn_save.clicked.connect(self.save_lyrics)
 
-    def play_song(self):
-        if self.highlighted_label:
-            song_name = self.highlighted_label.cget("text")
-            if not song_name.endswith(".mp3"):
-                return
-            song_path = os.path.join(self.music_directory, song_name)
-            self.media = self.instance.media_new(song_path)
-            self.songplayer.set_media(self.media)
-            self.songplayer.play()
+        btn_load = QPushButton("📂 Load")
+        btn_load.setStyleSheet("""
+            QPushButton {
+                background-color: #3d3d3d;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #4d4d4d;
+            }
+        """)
+        btn_load.clicked.connect(self.load_lyrics)
 
-    def stop_song(self):
-        self.songplayer.stop()
-        self.time = 0
+        search_layout.addWidget(QLabel("Title:"))
+        search_layout.addWidget(self.song_title_input)
+        search_layout.addWidget(QLabel("Artist:"))
+        search_layout.addWidget(self.artist_input)
+        search_layout.addWidget(btn_fetch)
+        search_layout.addStretch()
+        search_layout.addWidget(btn_save)
+        search_layout.addWidget(btn_load)
 
-    def pause_resume_song(self):
-        if self.songplayer.is_playing():
-            self.songplayer.pause()
+        layout.addWidget(search_frame)
+
+        self.lyrics_list = QListWidget(self.lyrics_tab)
+        self.lyrics_list.setStyleSheet("""
+            QListWidget {
+                background-color: #1e1e1e;
+                color: #ddd;
+                border: none;
+                padding: 10px;
+                font-size: 14px;
+                font-family: 'Sans Serif', Arial;
+            }
+            QListWidget::item {
+                padding: 5px;
+            }
+        """)
+        layout.addWidget(self.lyrics_list)
+
+    def load_music_list(self):
+        self.music_list.clear()
+        music_dir = get_music_dir()
+        for f in sorted(music_dir.iterdir()):
+            if f.suffix.lower() == ".mp3":
+                self.music_list.addItem(f.name)
+
+    def load_video_list(self):
+        self.video_list.clear()
+        video_dir = get_video_dir()
+        for f in sorted(video_dir.iterdir()):
+            if f.suffix.lower() in (".mp4", ".mkv", ".avi", ".webm"):
+                self.video_list.addItem(f.name)
+
+    def add_music_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Music Folder")
+        if folder:
+            src = Path(folder)
+            dst = get_music_dir()
+            for f in src.iterdir():
+                if f.suffix.lower() == ".mp3":
+                    shutil.copy(f, dst / f.name)
+            self.load_music_list()
+
+    def add_music_files(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Select MP3 Files", "",
+            "MP3 Files (*.mp3)"
+        )
+        if files:
+            dst = get_music_dir()
+            for f in files:
+                shutil.copy(f, dst / Path(f).name)
+            self.load_music_list()
+
+    def add_video_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Video Folder")
+        if folder:
+            src = Path(folder)
+            dst = get_video_dir()
+            for f in src.iterdir():
+                if f.suffix.lower() in (".mp4", ".mkv", ".avi", ".webm"):
+                    shutil.copy(f, dst / f.name)
+            self.load_video_list()
+
+    def add_video_files(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Select Video Files", "",
+            "Video Files (*.mp4 *.mkv *.avi *.webm)"
+        )
+        if files:
+            dst = get_video_dir()
+            for f in files:
+                shutil.copy(f, dst / Path(f).name)
+            self.load_video_list()
+
+    def download_music_youtube(self):
+        link, ok = QInputDialog.getText(self, "YouTube Download", "Enter YouTube URL:")
+        if ok and link:
+            self.download_youtube(link, "mp3")
+
+    def download_video_youtube(self):
+        link, ok = QInputDialog.getText(self, "YouTube Download", "Enter YouTube URL:")
+        if ok and link:
+            self.download_youtube(link, "mp4")
+
+    def download_youtube(self, url, fmt):
+        QMessageBox.information(self, "Download", f"Downloading {fmt.upper()} from YouTube...")
+
+        def do_download():
+            if fmt == "mp3":
+                out_dir = get_music_dir()
+            else:
+                out_dir = get_video_dir()
+
+            ydl_opts = {
+                'format': 'best' if fmt == "mp4" else 'bestaudio/best',
+                'outtmpl': str(out_dir / '%(title)s.%(ext)s'),
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }] if fmt == "mp3" else [],
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+
+        self.worker = Worker(do_download)
+        self.worker.finished.connect(lambda: self.on_download_complete(fmt))
+        self.worker.error.connect(lambda e: self.on_download_error(e))
+        threading.Thread(target=self.worker.run, daemon=True).start()
+
+    def on_download_complete(self, fmt):
+        QMessageBox.information(self, "Success", f"Download complete! Saved to {fmt.upper()} directory.")
+        if fmt == "mp3":
+            self.load_music_list()
         else:
-            self.songplayer.play()
-    
-    def rewind_song(self):
-        self.songplayer.set_time(self.songplayer.get_time() - 10000)
+            self.load_video_list()
 
-    def fast_forward_song(self):
-        self.songplayer.set_time(self.songplayer.get_time() + 10000)
+    def on_download_error(self, error):
+        QMessageBox.critical(self, "Error", f"Download failed: {error}")
+
+    def delete_music(self):
+        item = self.music_list.currentItem()
+        if item:
+            file = get_music_dir() / item.text()
+            file.unlink()
+            self.load_music_list()
+
+    def delete_video(self):
+        item = self.video_list.currentItem()
+        if item:
+            file = get_video_dir() / item.text()
+            file.unlink()
+            self.load_video_list()
+
+    def play_music(self):
+        item = self.music_list.currentItem()
+        if item:
+            self.currently_playing = get_music_dir() / item.text()
+            self.current_tab = "music"
+            self.play_file(str(self.currently_playing))
+            self.is_playing = True
+            self.is_paused = False
+            self.btn_play.setText("⏸ Pause")
 
     def play_video(self):
-        if self.highlighted_label:
-            video_name = self.highlighted_label.cget("text")
-            if not video_name.endswith(".mp4"):
-                return
-            video_path = os.path.join(self.video_directory, video_name)
-            self.media = self.instance.media_new(video_path)
-            self.mediaplayer.set_media(self.media)
-            for widget in self.video_container.winfo_children():
-                widget.destroy()
-            self.video_container.config(background="black")
-            self.video_canvas.config(background="black")
-            video_frame_id = self.video_frame.winfo_id()  
-            self.mediaplayer.set_hwnd(video_frame_id)
-            self.mediaplayer.play()
+        item = self.video_list.currentItem()
+        if item:
+            self.currently_playing = get_video_dir() / item.text()
+            self.current_tab = "video"
+            self.play_file(str(self.currently_playing))
+            self.is_playing = True
+            self.is_paused = False
+            self.btn_play.setText("⏸ Pause")
+
+    def play_file(self, path):
+        logger.debug(f"play_file called with path: {path}")
+        self.seek_slider.setValue(0)
+        self.current_time_label.setText("0:00")
+        self.is_changing_track = False
+        if os.path.exists(path):
+            media = self.vlc_instance.media_new(path)
+            self.media_player.set_media(media)
+
+            if sys.platform.startswith('linux'):
+                self.media_player.set_xwindow(int(self.video_frame.winId()))
+            elif sys.platform == "win32":
+                self.media_player.set_hwnd(int(self.video_frame.winId()))
+            elif sys.platform == "darwin":
+                self.media_player.set_nsobject(int(self.video_frame.winId()))
+
+            self.media_player.play()
+            self.update_timer.start(250)
+            logger.debug("Started playback, timer started")
+            QTimer.singleShot(1000, self.update_on_play)
+        else:
+            logger.error(f"File not found: {path}")
+            QMessageBox.warning(self, "Error", f"File not found: {path}")
+
+    def update_on_play(self):
+        try:
+            length = self.media_player.get_length()
+            logger.debug(f"update_on_play: get_length returned {length}")
+            if length > 0:
+                self.total_time_label.setText(self.format_time(length))
+                logger.debug(f"Total time set to: {self.format_time(length)}")
+            else:
+                logger.warning("update_on_play: length <= 0")
+        except Exception as e:
+            logger.error(f"update_on_play error: {e}")
+
+    def prev_track(self):
+        if self.current_tab == "music":
+            self.prev_music()
+        elif self.current_tab == "video":
+            self.prev_video()
+
+    def next_track(self):
+        if self.current_tab == "music":
+            self.next_music()
+        elif self.current_tab == "video":
+            self.next_video()
+
+    def stop_playback(self):
+        if self.current_tab == "music":
+            self.stop_music()
+        elif self.current_tab == "video":
+            self.stop_video()
+
+    def toggle_shuffle(self):
+        self.shuffle_mode = self.btn_shuffle.isChecked()
+        if self.shuffle_mode:
+            self.btn_shuffle.setStyleSheet("""
+                QPushButton {
+                    background-color: #2a5ca6;
+                    color: white;
+                    border: none;
+                    padding: 8px 12px;
+                    border-radius: 4px;
+                    font-size: 14px;
+                    min-width: 50px;
+                }
+            """)
+        else:
+            self.btn_shuffle.setStyleSheet("""
+                QPushButton {
+                    background-color: #3d3d3d;
+                    color: white;
+                    border: none;
+                    padding: 8px 12px;
+                    border-radius: 4px;
+                    font-size: 14px;
+                    min-width: 50px;
+                }
+            """)
+
+    def toggle_auto_play_next(self):
+        self.auto_play_next = self.btn_auto.isChecked()
+
+    def prev_music(self):
+        current_row = self.music_list.currentRow()
+        if current_row > 0:
+            self.music_list.setCurrentRow(current_row - 1)
+            self.play_music()
+
+    def prev_video(self):
+        current_row = self.video_list.currentRow()
+        if current_row > 0:
+            self.video_list.setCurrentRow(current_row - 1)
+            self.play_video()
+
+    def next_music(self):
+        if self.shuffle_mode and self.music_list.count() > 1:
+            choices = list(range(self.music_list.count()))
+            current = self.music_list.currentRow()
+            choices.remove(current)
+            self.music_list.setCurrentRow(random.choice(choices))
+            self.play_music()
+        else:
+            current_row = self.music_list.currentRow()
+            if current_row < self.music_list.count() - 1:
+                self.music_list.setCurrentRow(current_row + 1)
+                self.play_music()
+
+    def next_video(self):
+        if self.shuffle_mode and self.video_list.count() > 1:
+            choices = list(range(self.video_list.count()))
+            current = self.video_list.currentRow()
+            choices.remove(current)
+            self.video_list.setCurrentRow(random.choice(choices))
+            self.play_video()
+        else:
+            current_row = self.video_list.currentRow()
+            if current_row < self.video_list.count() - 1:
+                self.video_list.setCurrentRow(current_row + 1)
+                self.play_video()
+
+    def stop_music(self):
+        self.is_changing_track = True
+        self.media_player.stop()
+        self.update_timer.stop()
+        self.currently_playing = None
+        self.is_playing = False
+        self.is_paused = False
+        self.btn_play.setText("▶ Play")
+        self.seek_slider.setValue(0)
+        self.current_time_label.setText("0:00")
+        QTimer.singleShot(500, lambda: self.__dict__.update({'is_changing_track': False}))
+        self.total_time_label.setText("0:00")
 
     def stop_video(self):
-        self.mediaplayer.stop()
-        self.video_container.config(background="gray")
-        self.video_canvas.config(background="gray")
-        self.display_videos()
+        self.media_player.stop()
+        self.update_timer.stop()
+        self.currently_playing = None
+        self.is_playing = False
+        self.is_paused = False
+        self.btn_play.setText("▶ Play")
+        self.seek_slider.setValue(0)
+        self.current_time_label.setText("0:00")
+        self.total_time_label.setText("0:00")
 
-    def pause_resume_video(self):
-        if self.mediaplayer.is_playing():
-            self.mediaplayer.pause()
-        else:
-            self.mediaplayer.play()
+    def toggle_play_pause(self):
+        if self.is_paused:
+            self.media_player.play()
+            self.is_paused = False
+            self.is_playing = True
+            self.btn_play.setText("⏸ Pause")
+        elif self.is_playing:
+            self.media_player.pause()
+            self.is_paused = True
+            self.is_playing = False
+            self.btn_play.setText("▶ Play")
+        elif self.currently_playing:
+            self.play_file(str(self.currently_playing))
+            self.is_playing = True
+            self.is_paused = False
+            self.btn_play.setText("⏸ Pause")
 
-    def rewind_video(self):
-        self.mediaplayer.set_time(self.mediaplayer.get_time() - 10000)
+    def format_time(self, ms):
+        if ms <= 0:
+            return "0:00"
+        seconds = ms // 1000
+        minutes = seconds // 60
+        seconds = seconds % 60
+        return f"{minutes}:{seconds:02d}"
 
-    def fast_forward_video(self):
-        self.mediaplayer.set_time(self.mediaplayer.get_time() + 10000)
-
-    def change_tab(self, tab):
-        if tab == "music":
-            self.notebook.select(self.music_tab)
-        elif tab == "video":
-            self.notebook.select(self.video_tab)
-        elif tab == "lyric":
-            self.notebook.select(self.lyrics_tab)
-
-    def add_song_folder(self):
-        directory = filedialog.askdirectory()
-        if directory:
-            for file in os.listdir(directory):
-                if file.endswith(".mp3"):
-                    source_path = os.path.join(directory, file)
-                    destination_path = os.path.join(self.music_directory, file)
-                    if not os.path.exists(destination_path):
-                        shutil.copy(source_path, destination_path)
-            self.display_songs()
-
-    def add_mp3_file(self):
-        files = filedialog.askopenfilenames(filetypes=[("MP3 files", "*.mp3")])
-        if files:
-            for file in files:
-                file_name = os.path.basename(file)
-                destination_path = os.path.join(self.music_directory, file_name)
-                if not os.path.exists(destination_path):
-                    shutil.copy(file, destination_path)
-            self.display_songs()
-    
-    def add_video_folder(self):
-        directory = filedialog.askdirectory()
-        if directory:
-            for file in os.listdir(directory):
-                if file.endswith(".mp4"):
-                    source_path = os.path.join(directory, file)
-                    destination_path = os.path.join(self.video_directory, file)
-                    if not os.path.exists(destination_path):
-                        shutil.copy(source_path, destination_path)
-            self.display_videos()
-    
-    def add_mp4_file(self):
-        files = filedialog.askopenfilenames(filetypes=[("MP4 files", "*.mp4")])
-        if files:
-            for file in files:
-                file_name = os.path.basename(file)
-                destination_path = os.path.join(self.video_directory, file_name)
-                if not os.path.exists(destination_path):
-                    shutil.copy(file, destination_path)
-            self.display_videos()
-
-    def download_mp3(self):
-        link = simpledialog.askstring("Link", "Nhập link của bài hát bạn muốn tải:")
-        if link:
-            try:
-                video = YouTube(link)
-                stream = video.streams.filter(file_extension='mp4', progressive=True).order_by('resolution').desc().first()
-                downloaded_video_path = stream.download(self.video_directory)
-                mp3_file_path = os.path.join(self.music_directory, os.path.splitext(os.path.basename(downloaded_video_path))[0] + ".mp3")
-                AudioSegment.from_file(downloaded_video_path).export(mp3_file_path, format="mp3")
-                messagebox.showinfo("MP3", "Tải thành công.")
-                self.display_songs()
-                self.display_videos()
-            except Exception as e:
-                messagebox.showerror("Lỗi", e)
-
-    def download_mp4(self):
-        link = simpledialog.askstring("Link", "Nhập link của video bạn muốn tải:")
-        if link:
-            try:
-                video = YouTube(link)
-                stream = video.streams.filter(file_extension='mp4', progressive=True).order_by('resolution').desc().first()
-                downloaded_video_path = stream.download(self.video_directory)
-                messagebox.showinfo("MP4", "Tải thành công.")
-                self.display_videos()
-            except Exception as e:
-                messagebox.showerror("Lỗi", e)
-
-    def delete_selected_file(self, file):
+    def update_slider_position(self):
         try:
-            if file == "mp3":
-                if self.highlighted_label:
-                    song_name = self.highlighted_label.cget("text")
-                    song_path = os.path.join(self.music_directory, song_name)
-                    os.remove(song_path)
-                    self.songs.remove(song_name)
-                    self.highlighted_label.destroy()
-                else:
-                    raise Exception("Hãy chọn item cần xóa.")
-            elif file == "mp4":
-                if self.highlighted_label:
-                    video_name = self.highlighted_label.cget("text")
-                    video_path = os.path.join(self.video_directory, video_name)
-                    os.remove(video_path)
-                    self.videos.remove(video_name)
-                    self.highlighted_label.destroy()
-                else:
-                    raise Exception("Hãy chọn item cần xóa.")
-        except Exception as e:
-            messagebox.showerror("Lỗi", "Hãy chọn item cần xóa.")
-
-    def fetch_lyric(self):
-        song_title = self.song_title.get()
-        artist_name = self.artist_name.get()
-        if artist_name == "Nhập tên nghệ sĩ":
-            artist_name = ""
-        if not song_title or song_title == "Nhập tên bài hát":
-            messagebox.showerror("Lỗi", "Hãy nhập tên bài hát.")
-            return
-        try:
-            song = self.genius.search_song(song_title, artist_name)
-        except Exception as e:
-            messagebox.showerror("Lỗi", e)
-            return
-        if song:
-            lyrics = song.lyrics
-            self.display_lyrics(lyrics)
-        else:
-            messagebox.showerror("Lỗi", "Không tim thấy lời bài hát.")
-
-    def save_lyrics(self):
-        if not self.lyrics_container.winfo_children():
-            messagebox.showwarning("Thông báo", "Không có lời bài hát để lưu.")
-            return
-
-        file_name = simpledialog.askstring("Lưu lời bài hát", "Nhập tên file:")
-        if file_name:
-            file_path = os.path.join(self.lyric_directory, file_name + ".txt")
-            lyrics = ""
-            for widget in self.lyrics_container.winfo_children():
-                lyrics += widget.cget("text") + "\n"
-
-            with open(file_path, "w", encoding="utf-8") as file:
-                file.write(lyrics)
-            messagebox.showinfo("Thành công", f"Lời bài hát đã được lưu tại: {file_path}")
-    
-    def load_lyrics(self):
-        file_path = filedialog.askopenfilename(initialdir=self.lyric_directory, title="Chọn file lời bài hát", filetypes=[("Text files", "*.txt")])
-        if file_path:
-            with open(file_path, "r", encoding="utf-8") as file:
-                lyrics = file.readlines()
-
-            for widget in self.lyrics_container.winfo_children():
-                widget.destroy()
-
-            for line in lyrics:
-                lyric_label = Label(self.lyrics_container, text=line.strip(), bg="gray", width=94, anchor="w", padx=10, pady=0)
-                lyric_label.pack(fill=X, padx=5, pady=5)
-
-            self.lyrics_canvas.update_idletasks()
-            self.lyrics_canvas.config(scrollregion=self.lyrics_canvas.bbox("all"))
-            messagebox.showinfo("Thành công", "Tải lời bài hát thành công!")
-
-    def convert_mp4_to_mp3(self, mp4_path):
-        audio = AudioSegment.from_file(mp4_path, format="mp4")
-        mp3_path = mp4_path.replace(".mp4", ".mp3")
-        audio.export(mp3_path, format="mp3")
-        return mp3_path
-        
-    def display_songs(self):
-        for widget in self.song_container.winfo_children():
-            widget.destroy()
-
-        for file in os.listdir(self.music_directory):
-            if file.endswith(".mp3") and file not in self.songs:
-                self.songs.append(file)
+            length = self.media_player.get_length()
+            current = self.media_player.get_time()
+            
+            logger.debug(f"update_slider: length={length}, current={current}")
+            
+            if length <= 0:
+                length = self.media_player.length()
+                logger.debug(f"update_slider: fallback length={length}")
+            
+            if length > 0 and current >= 0 and not self.slider_dragging:
+                self.seek_slider.blockSignals(True)
+                self.seek_slider.setValue(int(current / length * 1000))
+                self.seek_slider.blockSignals(False)
+                self.current_time_label.setText(self.format_time(current))
+                self.total_time_label.setText(self.format_time(length))
                 
-        for song_name in self.songs:
-            song_label = Label(self.song_container, text=song_name, bg="#E0A469", width=94, anchor="w", padx=10, pady=5)
-            song_label.pack(fill=X, padx=5, pady=5)
-            song_label.bind("<Button-1>", lambda e, lbl=song_label: self.highlight_label(lbl))
+                if self.auto_play_next and current >= length - 2000 and not self.is_changing_track:
+                    logger.debug("Playback ending soon, triggering next track")
+                    self.is_changing_track = True
+                    QTimer.singleShot(0, self.next_track)
+                    QTimer.singleShot(500, lambda: self.__dict__.update({'is_changing_track': False}))
+            elif length > 0 and not self.slider_dragging:
+                self.total_time_label.setText(self.format_time(length))
+        except Exception as e:
+            logger.error(f"update_slider_position error: {e}")
 
-        self.song_canvas.update_idletasks()
-        self.song_canvas.config(scrollregion=self.song_canvas.bbox("all"))
+    def slider_pressed(self):
+        self.slider_dragging = True
 
-    def display_videos(self):
-        for widget in self.video_container.winfo_children():
-            widget.destroy()
+    def slider_released(self):
+        self.slider_dragging = False
+        try:
+            length = self.media_player.get_length()
+            if length <= 0:
+                length = self.media_player.length()
+            if length > 0:
+                position = self.seek_slider.value() / 1000 * length
+                self.media_player.set_time(int(position))
+        except Exception as e:
+            pass
 
-        for file in os.listdir(self.video_directory):
-            if file.endswith(".mp4") and file not in self.videos:
-                self.videos.append(file)
+    def seek_position(self, value):
+        try:
+            length = self.media_player.get_length()
+            if length <= 0:
+                length = self.media_player.length()
+            if length > 0:
+                position = value / 1000 * length
+                self.current_time_label.setText(self.format_time(int(position)))
+        except Exception as e:
+            pass
 
-        for video_name in self.videos:
-            video_label = Label(self.video_container, text=video_name, bg="#E0A469", width=94, anchor="w", padx=10, pady=5)
-            video_label.pack(fill=X, padx=5, pady=5)
-            video_label.bind("<Button-1>", lambda e, lbl=video_label: self.highlight_label(lbl))
+    def fetch_lyrics(self):
+        title = self.song_title_input.text().strip()
+        if not title:
+            QMessageBox.warning(self, "Error", "Please enter a song title")
+            return
 
-        self.video_canvas.update_idletasks()
-        self.video_canvas.config(scrollregion=self.video_canvas.bbox("all"))
+        artist = self.artist_input.text().strip()
+
+        def do_fetch():
+            try:
+                artist_param = artist.replace(" ", "%20") if artist else ""
+                title_param = title.replace(" ", "%20")
+                url = f"https://api.lyrics.ovh/v1/{artist_param}/{title_param}" if artist else f"https://api.lyrics.ovh/v1/{title_param}"
+                
+                response = requests.get(url, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    if "lyrics" in data:
+                        QTimer.singleShot(0, lambda: self.display_lyrics(data["lyrics"]))
+                    else:
+                        QTimer.singleShot(0, lambda: self.on_lyrics_error("No lyrics found"))
+                else:
+                    QTimer.singleShot(0, lambda: self.on_lyrics_error(f"Status: {response.status_code}"))
+            except Exception as e:
+                QTimer.singleShot(0, lambda: self.on_lyrics_error(str(e)))
+
+        threading.Thread(target=do_fetch, daemon=True).start()
+
+    def on_lyrics_error(self, error):
+        logger.error(f"Lyrics fetch error: {error}")
+        QMessageBox.critical(self, "Error", f"Failed to fetch lyrics: {error}")
 
     def display_lyrics(self, lyrics):
-        for widget in self.lyrics_container.winfo_children():
-            widget.destroy()
-        lines = lyrics.split("\n")
-        for line in lines:
-            lyric_label = Label(self.lyrics_container, text=line, bg="gray", width=94, anchor="w", padx=10, pady=0)
-            lyric_label.pack(fill=X, padx=5, pady=5)
-        self.lyrics_canvas.update_idletasks()
-        self.lyrics_canvas.config(scrollregion=self.lyrics_canvas.bbox("all"))
+        self.lyrics_list.clear()
+        for line in lyrics.split('\n'):
+            self.lyrics_list.addItem(line)
 
-    def highlight_label(self, label):
-        if self.highlighted_label is not None and self.highlighted_label.winfo_exists():
-            self.highlighted_label.config(bg="#E0A469")  
-        label.config(bg="#AAE54A")  
-        self.highlighted_label = label
+    def save_lyrics(self):
+        if self.lyrics_list.count() == 0:
+            QMessageBox.warning(self, "Error", "No lyrics to save")
+            return
 
-    def mouse_wheel(self, event):
-        self.song_canvas.yview_scroll(-1 * (event.delta // 120), "units")
-        self.video_canvas.yview_scroll(-1 * (event.delta // 120), "units")
-        self.lyrics_canvas.yview_scroll(-1 * (event.delta // 120), "units")
-        if self.song_canvas.yview()[0] <= 0:
-            self.song_canvas.yview_moveto(0)
-        if self.video_canvas.yview()[0] <= 0:
-            self.video_canvas.yview_moveto(0)
+        name, ok = QInputDialog.getText(self, "Save Lyrics", "Enter filename:")
+        if ok and name:
+            lyrics = ""
+            for i in range(self.lyrics_list.count()):
+                lyrics += self.lyrics_list.item(i).text() + "\n"
 
-    def add_placeholder(self, entry, placeholder):
-        entry.insert(0, placeholder)
-        entry.config(fg='grey')
-        def on_focus_in(event):
-            if entry.get() == placeholder:
-                entry.delete(0, END)
-                entry.config(fg='black')
-        def on_focus_out(event):
-            if not entry.get():
-                entry.insert(0, placeholder)
-                entry.config(fg='grey')
-        entry.bind("<FocusIn>", on_focus_in)
-        entry.bind("<FocusOut>", on_focus_out)
+            file_path = get_lyrics_dir() / f"{name}.txt"
+            file_path.write_text(lyrics, encoding="utf-8")
+            QMessageBox.information(self, "Success", f"Saved to {file_path}")
+
+    def load_lyrics(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Open Lyrics", str(get_lyrics_dir()),
+            "Text Files (*.txt)"
+        )
+        if file_path:
+            lyrics = Path(file_path).read_text(encoding="utf-8")
+            self.display_lyrics(lyrics)
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
+
 
 if __name__ == "__main__":
-    root = Tk()
-    app = MusicPlayer(root)
-    root.mainloop()
+    main()
