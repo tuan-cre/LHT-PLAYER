@@ -171,7 +171,7 @@ class MainWindow(QMainWindow):
         self.setup_controls()
 
     def on_tab_changed(self, index):
-        tabs = ["music", "video", "lyric"]
+        tabs = ["music", "video", "lyrics"]
         if index < len(tabs):
             self.current_tab = tabs[index]
 
@@ -826,56 +826,80 @@ class MainWindow(QMainWindow):
             """)
 
     def prev_music(self):
+        if self.music_list.count() == 0:
+            return
+        
         current_row = self.music_list.currentRow()
-        if current_row > 0:
-            self.music_list.setCurrentRow(current_row - 1)
-            self.play_music()
-        elif self.music_list.count() > 0:
+        if current_row < 0:
+            # No selection - start from end
             self.music_list.setCurrentRow(self.music_list.count() - 1)
-            self.play_music()
+        elif current_row > 0:
+            self.music_list.setCurrentRow(current_row - 1)
+        else:
+            # At start - go to end
+            self.music_list.setCurrentRow(self.music_list.count() - 1)
+        self.play_music()
 
     def prev_video(self):
+        if self.video_list.count() == 0:
+            return
+        
         current_row = self.video_list.currentRow()
-        if current_row > 0:
-            self.video_list.setCurrentRow(current_row - 1)
-            self.play_video()
-        elif self.video_list.count() > 0:
+        if current_row < 0:
+            # No selection - start from end
             self.video_list.setCurrentRow(self.video_list.count() - 1)
-            self.play_video()
+        elif current_row > 0:
+            self.video_list.setCurrentRow(current_row - 1)
+        else:
+            # At start - go to end
+            self.video_list.setCurrentRow(self.video_list.count() - 1)
+        self.play_video()
 
     def next_music(self):
+        if self.music_list.count() == 0:
+            return
+        
         if self.shuffle_mode and self.music_list.count() > 1:
             choices = list(range(self.music_list.count()))
             current = self.music_list.currentRow()
-            if current in choices:
+            if current >= 0 and current in choices:
                 choices.remove(current)
             self.music_list.setCurrentRow(random.choice(choices))
             self.play_music()
         else:
             current_row = self.music_list.currentRow()
-            if current_row < self.music_list.count() - 1:
-                self.music_list.setCurrentRow(current_row + 1)
-                self.play_music()
-            elif self.music_list.count() > 0:
+            if current_row < 0:
+                # No selection - start from beginning
                 self.music_list.setCurrentRow(0)
-                self.play_music()
+            elif current_row < self.music_list.count() - 1:
+                self.music_list.setCurrentRow(current_row + 1)
+            else:
+                # End of list - loop to start
+                self.music_list.setCurrentRow(0)
+            self.play_music()
 
     def next_video(self):
+        if self.video_list.count() == 0:
+            return
+        
         if self.shuffle_mode and self.video_list.count() > 1:
             choices = list(range(self.video_list.count()))
             current = self.video_list.currentRow()
-            if current in choices:
+            if current >= 0 and current in choices:
                 choices.remove(current)
             self.video_list.setCurrentRow(random.choice(choices))
             self.play_video()
         else:
             current_row = self.video_list.currentRow()
-            if current_row < self.video_list.count() - 1:
-                self.video_list.setCurrentRow(current_row + 1)
-                self.play_video()
-            elif self.video_list.count() > 0:
+            if current_row < 0:
+                # No selection - start from beginning
                 self.video_list.setCurrentRow(0)
-                self.play_video()
+            elif current_row < self.video_list.count() - 1:
+                self.video_list.setCurrentRow(current_row + 1)
+            else:
+                # End of list - loop to start
+                self.video_list.setCurrentRow(0)
+            self.play_video()
 
     def stop_music(self):
         self.is_changing_track = True
